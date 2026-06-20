@@ -48,6 +48,8 @@ pub async fn run_web_server(state: Arc<DaemonState>) {
         .route("/api/groups/:g/sessions", get(list_sessions))
         .route("/api/groups/:g/sessions/:s/messages", get(list_messages))
         .route("/api/groups/:g/sessions/:s/send", post(send_message))
+        .route("/api/groups/:g/feed", get(group_feed))
+        .route("/api/groups/:g/broadcast", post(broadcast_message))
         .route("/api/ws", get(ws_handler))
         // Permissive CORS so the chrome-extension:// origin's fetch/WS is allowed by the browser;
         // the origin_guard below is the actual access control.
@@ -219,6 +221,74 @@ async fn send_message(
         Ok(seq) => Json(json!({ "ok": true, "seq": seq })).into_response(),
         Err(e) => err500(e),
     }
+}
+
+#[derive(Deserialize)]
+struct FeedQuery {
+    #[serde(default)]
+    after_ms: u64,
+}
+
+/// The prime command console's backfill: every message across every session in the group, in one
+/// time-ordered timeline. Live updates ride the same WebSocket the per-session panels use.
+async fn group_feed(
+    State(state): State<Arc<DaemonState>>,
+    Path(group): Path<String>,
+    Query(q): Query<FeedQuery>,
+) -> Response {
+    match state.store.agent_msg_group_feed(&group, q.after_ms).await {
+        Ok(rows) => {
+            let out: Vec<Value> = rows
+                .into_iter()
+                .map(|m| {
+                    json!({
+                        "session": m.session_name,
+                        "seq": m.seq,
+                        "from_agent": m.from_agent,
+                        "to_agent": m.to_agent,
+                        "kind": m.kind,
+                        "text": String::from_utf8_lossy(&m.payload),
+                        "ts_ms": m.enqueued_at_ms,
+                    })
+                })
+                .collect();
+            Json(out).into_response()
+        }
+        Err(e) => err500(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct BroadcastBody {
+    #[serde(default)]
+    kind: Option<String>,
+    text: String,
+}
+
+/// Send a message as the prime to **every active session** in the group (the command console's
+/// broadcast). Each per-session enqueue lands in that session's read-only panel and in the feed.
+async fn broadcast_message(
+    State(state): State<Arc<DaemonState>>,
+    Path(group): Path<String>,
+    Json(body): Json<BroadcastBody>,
+) -> Response {
+    let sessions = match state.store.session_list(&group).await {
+        Ok(s) => s,
+        Err(e) => return err500(e),
+    };
+    let kind = kind_from_str(body.kind.as_deref().unwrap_or("turn_input"));
+    let mut sent = 0u32;
+    for s in sessions.iter().filter(|s| s.status == "active") {
+        // The user is the group prime; address each child by name.
+        if state
+            .bus_enqueue(&group, &s.name, "prime", &s.child_agent, kind, body.text.clone().into_bytes())
+            .await
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+    Json(json!({ "ok": true, "sent": sent })).into_response()
 }
 
 #[derive(Deserialize)]

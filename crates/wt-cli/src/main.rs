@@ -897,16 +897,64 @@ async fn cmd_group_new(name: &str) -> Result<()> {
         },
     )
     .await?;
-    match read_event(&mut s).await? {
+    let token = match read_event(&mut s).await? {
         IpcEvent::GroupCreated { group, token } => {
             eprintln!("created group '{group}'; you are its prime agent. To act as it, export:");
             eprintln!("  export WT_GROUP={group} WT_TOKEN={token}");
-            println!("{token}");
-            Ok(())
+            token
         }
         IpcEvent::Err(e) => bail!(e),
         other => bail!("unexpected: {other:?}"),
+    };
+
+    // Auto-start the group's PRIME COORDINATOR harness in the current directory. The prime is the
+    // agent you chat with (dashboard, or `wt send --session coordinator`); it delegates to child
+    // worker sessions itself — you never message children directly. Provisioned from the cwd so
+    // it can spawn workers against this repo.
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    let fs_mode = resolve_fs_mode(&cwd, false, false)?;
+    let goal = "No task has been given yet. Briefly introduce yourself in one line as the prime \
+                coordinator and ask the user what they would like to build, then wait for their \
+                instruction."
+        .to_string();
+    request_one(
+        &mut s,
+        &IpcRequest::Spawn {
+            token: token.clone(),
+            group: name.to_string(),
+            session: "coordinator".to_string(),
+            base_dir: cwd.clone(),
+            fs_mode,
+            branch: None,
+            label: None,
+            prompt: goal,
+            harness_argv: None,
+            idle_timeout_secs: None,
+            permission_mode: None,
+            skip_permissions: false,
+            trace: false,
+            coordinator: true,
+        },
+    )
+    .await?;
+    match read_event(&mut s).await? {
+        IpcEvent::Spawned {
+            session, workspace, ..
+        } => {
+            eprintln!("  prime coordinator started: session '{session}' (cwd: {cwd})");
+            eprintln!("  workspace: {workspace}");
+        }
+        IpcEvent::Err(e) => {
+            eprintln!("  warning: prime coordinator did not auto-start: {e}");
+            eprintln!("  start it manually: wt spawn --coordinator --session coordinator --dir <dir>");
+        }
+        other => bail!("unexpected: {other:?}"),
     }
+    // Token to stdout (scriptable) — last line, as before.
+    println!("{token}");
+    Ok(())
 }
 
 async fn cmd_group_ls() -> Result<()> {

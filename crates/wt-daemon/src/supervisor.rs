@@ -183,6 +183,10 @@ async fn run(
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             _ = tokio::time::sleep(POLL) => {
+                // Heartbeat: prove this session's supervisor is still alive. A session whose
+                // last_seen stops advancing is broken/orphaned — the dashboard flags it stale
+                // rather than showing a misleading "running".
+                let _ = state.store.agent_touch(&group, &child).await;
                 drain_or_die!();
                 // Idle-turn timeout (notify-only): a turn silent past the window ⇒ tell the prime
                 // once; keep the child running (the prime decides to nudge or kill).

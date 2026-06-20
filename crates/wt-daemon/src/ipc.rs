@@ -454,7 +454,9 @@ async fn dispatch(
                 role: "prime".to_string(),
                 dir: None,
                 pid: None,
-                status: "running".to_string(),
+                // The prime is a passive controller (the user / dashboard), not a running
+                // harness process — so it's idle, not "running".
+                status: "idle".to_string(),
                 created_at_ms: wt_core::store::unix_ms(),
                 last_seen_ms: None,
             };
@@ -706,9 +708,6 @@ async fn dispatch(
             coordinator,
         } => {
             let _ = (branch, label); // reserved; v1 derives the branch as wt/<group>/<session>
-            // A coordinator is a prime-role harness (so it can spawn + command workers itself);
-            // a normal worker is a child-role harness.
-            let agent_role = if *coordinator { "prime" } else { "child" };
             let idle_timeout = (*idle_timeout_secs).map(std::time::Duration::from_secs);
             let me = match resolve_agent(state, token).await? {
                 Some(a) => a,
@@ -723,187 +722,30 @@ async fn dispatch(
             if me.group_name != *group || me.role != "prime" {
                 return write_event(
                     stream,
-                    &err(
-                        IpcErrorCode::Unauthorized,
-                        "spawn requires the group's prime token",
-                    ),
+                    &err(IpcErrorCode::Unauthorized, "spawn requires the group's prime token"),
                 )
                 .await;
             }
-            if state.store.session_get(group, session).await?.is_some()
-                || state.store.agent_get(group, session).await?.is_some()
-            {
-                return write_event(
-                    stream,
-                    &err(
-                        IpcErrorCode::BadRequest,
-                        format!("session '{session}' already exists in group '{group}'"),
-                    ),
-                )
-                .await;
-            }
-            let base = std::path::PathBuf::from(base_dir);
-            let ws = match wt_core::workspace::provision(group, session, &base, *fs_mode).await {
-                Ok(w) => w,
-                Err(e) => {
-                    return write_event(
-                        stream,
-                        &err(
-                            IpcErrorCode::BadRequest,
-                            format!("workspace provisioning failed: {e}"),
-                        ),
-                    )
-                    .await
-                }
-            };
-            let child_token = auth::new_agent_token();
-            let now = wt_core::store::unix_ms();
-            // Atomic gate: INSERT OR IGNORE returns false if the name was taken (lost a race) —
-            // roll back the freshly-provisioned workspace and error.
-            if !state
-                .store
-                .agent_register(&AgentRow {
-                    group_name: group.clone(),
-                    name: session.clone(),
-                    token_hash: auth::agent_token_hash(&child_token),
-                    role: agent_role.to_string(),
-                    dir: Some(base_dir.clone()),
-                    pid: None,
-                    status: "starting".to_string(),
-                    created_at_ms: now,
-                    last_seen_ms: None,
-                })
-                .await?
-            {
-                let _ = wt_core::workspace::teardown(
-                    &ws.path,
-                    Some(base.as_path()),
-                    *fs_mode,
-                    ws.branch.as_deref(),
-                    true,
-                )
-                .await;
-                return write_event(
-                    stream,
-                    &err(
-                        IpcErrorCode::BadRequest,
-                        format!("session '{session}' already exists in group '{group}'"),
-                    ),
-                )
-                .await;
-            }
-            let fs_mode_str = match fs_mode {
-                FsMode::Worktree => "worktree",
-                FsMode::New => "new",
-            };
-            if !state
-                .store
-                .session_create(&SessionRow {
-                    group_name: group.clone(),
-                    name: session.clone(),
-                    prime_agent: me.name.clone(),
-                    child_agent: session.clone(),
-                    fs_mode: fs_mode_str.to_string(),
-                    base_dir: Some(base_dir.clone()),
-                    workspace_path: ws.path.to_string_lossy().to_string(),
-                    branch: ws.branch.clone(),
-                    status: "active".to_string(),
-                    created_at_ms: now,
-                })
-                .await?
-            {
-                let _ = state
-                    .store
-                    .agent_set_status(group, session, "exited", None)
-                    .await;
-                let _ = wt_core::workspace::teardown(
-                    &ws.path,
-                    Some(base.as_path()),
-                    *fs_mode,
-                    ws.branch.as_deref(),
-                    true,
-                )
-                .await;
-                return write_event(
-                    stream,
-                    &err(
-                        IpcErrorCode::BadRequest,
-                        format!("session '{session}' already exists in group '{group}'"),
-                    ),
-                )
-                .await;
-            }
-            // An explicit harness override wins verbatim; otherwise build the Claude command with
-            // the requested permission posture (plan / skip-permissions / …) baked into argv.
-            let argv = match harness_argv.clone().filter(|v| !v.is_empty()) {
-                Some(a) => a,
-                None => {
-                    wt_core::harness::claude_argv(permission_mode.as_deref(), *skip_permissions)
-                }
-            };
-            let spec = wt_core::harness::HarnessSpec {
-                argv,
-                cwd: ws.path.clone(),
-                env: vec![
-                    ("WT_TOKEN".to_string(), child_token.clone()),
-                    ("WT_GROUP".to_string(), group.clone()),
-                    ("WT_SESSION".to_string(), session.clone()),
-                    ("WT_AGENT".to_string(), session.clone()),
-                    (
-                        "WT_HOME".to_string(),
-                        paths::home().to_string_lossy().to_string(),
-                    ),
-                ],
-                initial_prompt: if *coordinator {
-                    coordinator_prompt(group, base_dir, prompt)
-                } else {
-                    prompt.clone()
-                },
-                stderr_log: Some(paths::logs_dir().join(format!("harness-{group}-{session}.log"))),
-            };
-            match crate::supervisor::start(
-                state.clone(),
-                group.clone(),
-                session.clone(),
-                me.name.clone(),
-                spec,
-                idle_timeout,
-                *trace,
+            match spawn_session(
+                state, &me.name, group, session, base_dir, *fs_mode, prompt,
+                harness_argv.clone(), idle_timeout, permission_mode.clone(),
+                *skip_permissions, *trace, *coordinator,
             )
             .await
             {
-                Ok(_pid) => {
+                Ok(out) => {
                     write_event(
                         stream,
                         &IpcEvent::Spawned {
                             group: group.clone(),
                             session: session.clone(),
-                            token: child_token,
-                            workspace: ws.path.to_string_lossy().to_string(),
+                            token: out.child_token,
+                            workspace: out.workspace,
                         },
                     )
                     .await
                 }
-                Err(e) => {
-                    // Roll back: mark exited and discard the freshly-provisioned workspace.
-                    let _ = state
-                        .store
-                        .agent_set_status(group, session, "exited", None)
-                        .await;
-                    let _ = wt_core::workspace::teardown(
-                        &ws.path,
-                        Some(base.as_path()),
-                        *fs_mode,
-                        ws.branch.as_deref(),
-                        true,
-                    )
-                    .await;
-                    write_event(
-                        stream,
-                        &err(IpcErrorCode::Internal, format!("harness spawn failed: {e}")),
-                    )
-                    .await
-                }
+                Err((code, msg)) => write_event(stream, &err(code, msg)).await,
             }
         }
         IpcRequest::AgentKill { token, agent } => {
@@ -1110,4 +952,144 @@ to the user. Re-spawning a session name that already exists will fail — reuse 
 - End every turn with a concise status the user will read in the dashboard.\n\n\
 The user's goal:\n{goal}"
     )
+}
+
+
+/// The result of provisioning + launching a session's harness.
+pub(crate) struct SpawnOutcome {
+    pub workspace: String,
+    pub child_token: String,
+}
+
+fn spawn_err(e: impl std::fmt::Display) -> (IpcErrorCode, String) {
+    (IpcErrorCode::Internal, e.to_string())
+}
+
+/// Provision a session workspace, register its agent + session row, and launch the supervised
+/// harness. Shared by the `Spawn` IPC handler (after token auth) and the web gateway (pre-trusted
+/// localhost). `prime_name` is the controlling prime agent; `coordinator` registers the agent with
+/// `role = "prime"` and injects orchestration instructions. Rolls back the workspace on failure.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_session(
+    state: &Arc<DaemonState>,
+    prime_name: &str,
+    group: &str,
+    session: &str,
+    base_dir: &str,
+    fs_mode: FsMode,
+    prompt: &str,
+    harness_argv: Option<Vec<String>>,
+    idle_timeout: Option<std::time::Duration>,
+    permission_mode: Option<String>,
+    skip_permissions: bool,
+    trace: bool,
+    coordinator: bool,
+) -> Result<SpawnOutcome, (IpcErrorCode, String)> {
+    let agent_role = if coordinator { "prime" } else { "child" };
+    if state.store.session_get(group, session).await.map_err(spawn_err)?.is_some()
+        || state.store.agent_get(group, session).await.map_err(spawn_err)?.is_some()
+    {
+        return Err((
+            IpcErrorCode::BadRequest,
+            format!("session '{session}' already exists in group '{group}'"),
+        ));
+    }
+    let base = std::path::PathBuf::from(base_dir);
+    let ws = wt_core::workspace::provision(group, session, &base, fs_mode)
+        .await
+        .map_err(|e| (IpcErrorCode::BadRequest, format!("workspace provisioning failed: {e}")))?;
+    let child_token = auth::new_agent_token();
+    let now = wt_core::store::unix_ms();
+    if !state
+        .store
+        .agent_register(&AgentRow {
+            group_name: group.to_string(),
+            name: session.to_string(),
+            token_hash: auth::agent_token_hash(&child_token),
+            role: agent_role.to_string(),
+            dir: Some(base_dir.to_string()),
+            pid: None,
+            status: "starting".to_string(),
+            created_at_ms: now,
+            last_seen_ms: None,
+        })
+        .await
+        .map_err(spawn_err)?
+    {
+        let _ = wt_core::workspace::teardown(&ws.path, Some(base.as_path()), fs_mode, ws.branch.as_deref(), true).await;
+        return Err((
+            IpcErrorCode::BadRequest,
+            format!("session '{session}' already exists in group '{group}'"),
+        ));
+    }
+    let fs_mode_str = match fs_mode {
+        FsMode::Worktree => "worktree",
+        FsMode::New => "new",
+    };
+    if !state
+        .store
+        .session_create(&SessionRow {
+            group_name: group.to_string(),
+            name: session.to_string(),
+            prime_agent: prime_name.to_string(),
+            child_agent: session.to_string(),
+            fs_mode: fs_mode_str.to_string(),
+            base_dir: Some(base_dir.to_string()),
+            workspace_path: ws.path.to_string_lossy().to_string(),
+            branch: ws.branch.clone(),
+            status: "active".to_string(),
+            created_at_ms: now,
+        })
+        .await
+        .map_err(spawn_err)?
+    {
+        let _ = state.store.agent_set_status(group, session, "exited", None).await;
+        let _ = wt_core::workspace::teardown(&ws.path, Some(base.as_path()), fs_mode, ws.branch.as_deref(), true).await;
+        return Err((
+            IpcErrorCode::BadRequest,
+            format!("session '{session}' already exists in group '{group}'"),
+        ));
+    }
+    let argv = match harness_argv.filter(|v| !v.is_empty()) {
+        Some(a) => a,
+        None => wt_core::harness::claude_argv(permission_mode.as_deref(), skip_permissions),
+    };
+    let spec = wt_core::harness::HarnessSpec {
+        argv,
+        cwd: ws.path.clone(),
+        env: vec![
+            ("WT_TOKEN".to_string(), child_token.clone()),
+            ("WT_GROUP".to_string(), group.to_string()),
+            ("WT_SESSION".to_string(), session.to_string()),
+            ("WT_AGENT".to_string(), session.to_string()),
+            ("WT_HOME".to_string(), paths::home().to_string_lossy().to_string()),
+        ],
+        initial_prompt: if coordinator {
+            coordinator_prompt(group, base_dir, prompt)
+        } else {
+            prompt.to_string()
+        },
+        stderr_log: Some(paths::logs_dir().join(format!("harness-{group}-{session}.log"))),
+    };
+    match crate::supervisor::start(
+        state.clone(),
+        group.to_string(),
+        session.to_string(),
+        prime_name.to_string(),
+        spec,
+        idle_timeout,
+        trace,
+    )
+    .await
+    {
+        Ok(_pid) => Ok(SpawnOutcome {
+            workspace: ws.path.to_string_lossy().to_string(),
+            child_token,
+        }),
+        Err(e) => {
+            let _ = state.store.agent_set_status(group, session, "exited", None).await;
+            let _ = wt_core::workspace::teardown(&ws.path, Some(base.as_path()), fs_mode, ws.branch.as_deref(), true).await;
+            Err((IpcErrorCode::Internal, format!("harness spawn failed: {e}")))
+        }
+    }
 }

@@ -1104,6 +1104,43 @@ impl Store {
         .await
     }
 
+    /// Unified message feed for an **entire group** — every session's messages interleaved in
+    /// time order, enqueued after `after_ms` (exclusive). Backs the prime command console, which
+    /// dumps all conversations into one timeline.
+    pub async fn agent_msg_group_feed(&self, group: &str, after_ms: u64) -> Result<Vec<AgentMsgRow>> {
+        let group = group.to_string();
+        self.call(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT group_name, session_name, seq, from_agent, to_agent, kind,
+                        payload, enqueued_at_ms, consumed_at_ms
+                 FROM agent_messages
+                 WHERE group_name = ?1 AND enqueued_at_ms > ?2
+                 ORDER BY enqueued_at_ms ASC, session_name ASC, seq ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![group, after_ms as i64], row_to_agent_msg)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Heartbeat: bump an agent's `last_seen_ms` without touching its status. The supervisor calls
+    /// this on its poll tick so a live session keeps a fresh timestamp; a session whose supervisor
+    /// has died (orphaned, or never existed) goes stale, which the dashboard surfaces.
+    pub async fn agent_touch(&self, group: &str, name: &str) -> Result<()> {
+        let group = group.to_string();
+        let name = name.to_string();
+        self.call(move |conn| {
+            conn.execute(
+                "UPDATE agents SET last_seen_ms = ?1 WHERE group_name = ?2 AND name = ?3",
+                params![unix_ms() as i64, group, name],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Test-only escape hatch: run an arbitrary closure against the connection.
     #[cfg(test)]
     pub(crate) async fn test_with_conn<F, R>(&self, f: F) -> Result<R>
