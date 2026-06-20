@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "wt dashboard",
+  "version": "0.1.0",
+  "description": "New-tab dashboard for the wt daemon: groups, sessions, live messages, and prime replies.",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:8787/*"
+  ]
+}

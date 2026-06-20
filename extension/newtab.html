@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wt · agent control</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="brand">
+        <div class="brand-mark">wt</div>
+        <div class="brand-sub">agent&nbsp;control</div>
+        <div class="conn">
+          <span id="conn-dot" class="conn-dot"></span>
+          <span id="sidebar-status">linking…</span>
+        </div>
+      </header>
+      <div class="rail-label">groups</div>
+      <nav id="group-list" class="group-list"></nav>
+      <footer class="sidebar-foot">
+        <span class="foot-dot"></span> walkie-talkie for agents
+      </footer>
+    </aside>
+
+    <main id="main">
+      <header id="board-head" class="board-head">
+        <div class="board-head-row">
+          <h1 id="board-title">— no group —</h1>
+          <span id="board-sub" class="board-sub"></span>
+        </div>
+        <div class="legend">
+          <span class="lg"><i class="dot dot-running"></i>running</span>
+          <span class="lg"><i class="dot dot-awaiting_input"></i>awaiting</span>
+          <span class="lg"><i class="dot dot-exited"></i>exited</span>
+          <span class="lg lg-prime"><i class="dot dot-prime"></i>coordinator</span>
+        </div>
+      </header>
+      <section id="board" class="board empty">
+        <div class="empty-note">select a group from the left rail</div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
