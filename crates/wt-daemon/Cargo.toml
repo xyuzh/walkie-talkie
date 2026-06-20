@@ -1,0 +1,28 @@
+[package]
+name = "wt-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "wt_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+wt-proto = { workspace = true }
+wt-core = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ciborium = { workspace = true }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+iroh = { workspace = true }
+futures-lite = { workspace = true }
+hex = { workspace = true }
+libc = "0.2"
+mdns-sd = "0.19"

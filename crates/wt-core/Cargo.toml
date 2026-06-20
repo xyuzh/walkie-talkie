@@ -1,0 +1,25 @@
+[package]
+name = "wt-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wt-proto = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ciborium = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { workspace = true }
+iroh = { workspace = true }
+data-encoding = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+directories = { workspace = true }
+futures-lite = { workspace = true }
+blake3 = "1"

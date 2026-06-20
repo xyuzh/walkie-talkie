@@ -1,0 +1,25 @@
+[package]
+name = "wt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
+
+[dependencies]
+wt-proto = { workspace = true }
+wt-core = { workspace = true }
+wt-daemon = { workspace = true }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ciborium = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+data-encoding = { workspace = true }
+hex = { workspace = true }

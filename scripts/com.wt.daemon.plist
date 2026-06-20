@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.wt.daemon</string>
+
+    <!-- Run the wt daemon. Update the path if you install the binary elsewhere. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.local/bin/wt</string>
+        <string>daemon</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>warn,wt_daemon=info</string>
+        <!-- launchd has a minimal PATH; the daemon spawns `claude` (and it needs `node`),
+             so give children a PATH that finds them. Adjust to match your install. -->
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- Spawned children run headless (no interactive permission prompts), so the harness
+             must bypass permission checks. Each session is an isolated worktree sandbox. -->
+        <key>WT_HARNESS_CMD</key>
+        <string>claude --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions</string>
+        <!-- Uncomment to move the web dashboard off the default 127.0.0.1:8787
+        <key>WT_WEB_ADDR</key>
+        <string>127.0.0.1:8787</string>
+        -->
+    </dict>
+
+    <!-- Start at login and keep it alive (restart if it crashes). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.wt/run/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.wt/run/daemon.log</string>
+</dict>
+</plist>
